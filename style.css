@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AI Color Reaction 3D Game - Pro Version</title>
+<style>
+body { margin:0; overflow:hidden; font-family:Arial; background:#000; color:white; }
+#ui { position:absolute; top:20px; left:20px; z-index:2; }
+video { position:absolute; bottom:10px; right:10px; width:180px; border:2px solid white; transform: scaleX(-1); }
+canvas { position:absolute; top:0; left:0; }
+</style>
+</head>
+<body>
+<div id="ui">
+<h2>Score: <span id="score">0</span></h2>
+<h3 id="level">Level: 1</h3>
+<h3 id="instruction">Loading AI...</h3>
+<h3 id="timer"></h3>
+<h3 id="aiStatus"></h3>
+</div>
+
+<video id="camera" autoplay></video>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+let score = 0;
+let level = 1;
+let timeLimit = 3000;
+let currentAction = "";
+let lastDetected = false;
+let lastFrame = null;
+
+// ===== SOUND SYSTEM =====
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function beep(freq=600, duration=0.1){
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.frequency.value = freq;
+  osc.start();
+  osc.stop(audioCtx.currentTime + duration);
+}
+
+// ===== THREE JS WORLD =====
+let scene = new THREE.Scene();
+let camera3d = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+let renderer = new THREE.WebGLRenderer();
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// PLAYER (you)
+let player = new THREE.Mesh(
+  new THREE.BoxGeometry(0.5,1,0.5),
+  new THREE.MeshBasicMaterial({color:0x00ff00})
+);
+scene.add(player);
+player.position.x = -1;
+
+// AI COMPANION
+let ai = new THREE.Mesh(
+  new THREE.BoxGeometry(0.5,1,0.5),
+  new THREE.MeshBasicMaterial({color:0xff0000})
+);
+scene.add(ai);
+ai.position.x = 1;
+
+// GAME OBJECT
+let cube = new THREE.Mesh(
+  new THREE.BoxGeometry(),
+  new THREE.MeshBasicMaterial({color:0xffffff})
+);
+scene.add(cube);
+cube.position.y = 1.5;
+
+camera3d.position.z = 4;
+
+// ===== LEVEL SYSTEM =====
+function updateLevel(){
+  level = Math.floor(score/5)+1;
+  document.getElementById("level").innerText = "Level: " + level;
+  timeLimit = Math.max(800, 3000 - level*200);
+}
+
+// ===== RULES =====
+const rules = [
+ {color:0xff0000, text:"Jump", id:"jump"},
+ {color:0x0000ff, text:"Clap", id:"clap"},
+ {color:0x00ff00, text:"Run", id:"run"},
+ {color:0xffff00, text:"Spin", id:"spin"},
+ {color:0x800080, text:"Balance", id:"balance"},
+ {color:0xffa500, text:"Squat", id:"squat"}
+];
+
+function nextRound(){
+ let r = rules[Math.floor(Math.random()*rules.length)];
+ currentAction = r.id;
+ cube.material.color.setHex(r.color);
+ document.getElementById("instruction").innerText = r.text;
+ document.getElementById("aiStatus").innerText = "AI: watching...";
+
+ lastDetected = false;
+
+ setTimeout(()=>{
+   if(lastDetected){
+     score++;
+     beep(800,0.1);
+     document.getElementById("score").innerText = score;
+     document.getElementById("aiStatus").innerText = "AI: correct!";
+   } else {
+     beep(200,0.2);
+     document.getElementById("aiStatus").innerText = "AI: missed";
+   }
+
+   updateLevel();
+   nextRound();
+ }, timeLimit);
+}
+
+// ===== AI POSE =====
+const videoElement = document.getElementById('camera');
+
+function dist(a,b){
+ return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
+}
+
+const pose = new Pose.Pose({
+  locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+});
+
+pose.setOptions({
+  modelComplexity: 1,
+  smoothLandmarks: true,
+  minDetectionConfidence: 0.6,
+  minTrackingConfidence: 0.6
+});
+
+pose.onResults(onResults);
+
+function onResults(results){
+ if(!results.poseLandmarks) return;
+ let lm = results.poseLandmarks;
+
+ let nose = lm[0];
+ let lw = lm[15], rw = lm[16];
+ let lh = lm[23], rh = lm[24];
+ let lk = lm[25], rk = lm[26];
+
+ let handsClose = dist(lw,rw) < 0.12;
+ let squat = ((lh.y + rh.y)/2) > 0.65;
+ let jump = nose.y < 0.18;
+ let balance = (lk.y < lh.y - 0.05) || (rk.y < rh.y - 0.05);
+
+ let run = lastFrame ? (Math.abs(lw.y-lastFrame.lw)+Math.abs(rw.y-lastFrame.rw))>0.03 : false;
+ lastFrame = {lw:lw.y, rw:rw.y};
+
+ let spin = Math.abs(nose.x-0.5) > 0.25;
+
+ if(currentAction=="clap" && handsClose) lastDetected=true;
+ if(currentAction=="squat" && squat) lastDetected=true;
+ if(currentAction=="jump" && jump) lastDetected=true;
+ if(currentAction=="balance" && balance) lastDetected=true;
+ if(currentAction=="run" && run) lastDetected=true;
+ if(currentAction=="spin" && spin) lastDetected=true;
+}
+
+const cam = new Camera.Camera(videoElement, {
+  onFrame: async () => { await pose.send({image: videoElement}); },
+  width: 640,
+  height: 480
+});
+cam.start();
+
+// ===== ANIMATION =====
+function animate(){
+ requestAnimationFrame(animate);
+
+ cube.rotation.x += 0.01;
+ cube.rotation.y += 0.01;
+
+ // AI companion follows score (fake multiplayer)
+ ai.position.y = Math.sin(Date.now()*0.003)*0.3;
+
+ renderer.render(scene, camera3d);
+}
+animate();
+
+nextRound();
+</script>
+</body>
+</html>
